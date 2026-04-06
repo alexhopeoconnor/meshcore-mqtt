@@ -24,12 +24,31 @@ def _extract_arrow_value(response: str) -> str:
     return value.replace("\r", "").strip()
 
 
-def _send_command(port: "serial.Serial", command: str, delay: float = 1.0) -> str:
+def _send_command(
+    port: "serial.Serial",
+    command: str,
+    timeout: float = 10.0,
+) -> str:
+    if not command.endswith("\r\n"):
+        command = f"{command}\r\n"
+
     port.reset_input_buffer()
     port.reset_output_buffer()
-    port.write(command.encode())
-    time.sleep(delay)
-    return port.read_all().decode(errors="replace")
+    port.write(command.encode("utf-8"))
+
+    start_time = time.time()
+    response_chunks: list[str] = []
+
+    while (time.time() - start_time) < timeout:
+        time.sleep(0.1)
+        if port.in_waiting > 0:
+            data = port.read_all().decode(errors="replace")
+            response_chunks.append(data)
+            full_response = "".join(response_chunks)
+            if "-> " in full_response or full_response.rstrip().endswith(">"):
+                break
+
+    return "".join(response_chunks)
 
 
 def read_device_keys(
@@ -46,13 +65,23 @@ def read_device_keys(
         baudrate=baudrate,
         timeout=timeout,
         write_timeout=timeout,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        bytesize=serial.EIGHTBITS,
+        rtscts=False,
     ) as port:
-        public_response = _send_command(port, "get public.key\r\n", delay=1.0)
+        # Wake the MeshCore serial CLI and clear any stale prompt data.
+        port.write(b"\r\n\r\n")
+        time.sleep(0.2)
+        port.reset_input_buffer()
+        port.reset_output_buffer()
+
+        public_response = _send_command(port, "get public.key", timeout=10.0)
         public_key = _clean_hex(_extract_arrow_value(public_response))
         if len(public_key) != 64 or any(c not in "0123456789ABCDEF" for c in public_key):
             raise RuntimeError(f"Invalid MeshCore public key response: {public_key!r}")
 
-        private_response = _send_command(port, "get prv.key\r\n", delay=1.0)
+        private_response = _send_command(port, "get prv.key", timeout=10.0)
         private_key = _clean_hex(_extract_arrow_value(private_response))
         if len(private_key) != 128 or any(c not in "0123456789ABCDEF" for c in private_key):
             raise RuntimeError(

@@ -33,8 +33,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools && \
 COPY meshcore_mqtt/ ./meshcore_mqtt/
 COPY pyproject.toml ./
 
-# Install the package
-RUN pip install --no-cache-dir .
+# Install the package without re-resolving dependencies away from requirements.txt
+RUN pip install --no-cache-dir --no-deps .
 
 # Stage 2: Runtime stage with minimal Alpine image
 FROM python:3.12-alpine AS runtime
