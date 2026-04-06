@@ -1,4 +1,4 @@
-"""Helpers for reading MeshCore keys from a serial-connected node."""
+"""Helpers for reading MeshCore keys via the MeshCore companion protocol."""
 
 from __future__ import annotations
 
@@ -11,44 +11,64 @@ except ImportError:  # pragma: no cover - dependency comes from meshcore
     serial = None
 
 
-def _clean_hex(value: str) -> str:
-    return "".join(value.split()).upper()
+FRAME_FROM_CLIENT = 0x3C
+FRAME_FROM_DEVICE = 0x3E
+PACKET_SELF_INFO = 5
+PACKET_PRIVATE_KEY = 14
+CMD_APP_START = b"\x01\x03      mccli"
+CMD_EXPORT_PRIVATE_KEY = b"\x17"
 
 
-def _extract_arrow_value(response: str) -> str:
-    if "-> >" not in response:
-        raise RuntimeError(f"Unexpected serial response: {response!r}")
-    value = response.split("-> >", 1)[1].strip()
-    if "\n" in value:
-        value = value.split("\n", 1)[0]
-    return value.replace("\r", "").strip()
+def _read_exact(port: "serial.Serial", size: int, timeout: float) -> bytes:
+    deadline = time.time() + timeout
+    chunks = bytearray()
+    while len(chunks) < size and time.time() < deadline:
+        data = port.read(size - len(chunks))
+        if data:
+            chunks.extend(data)
+        else:
+            time.sleep(0.05)
+    if len(chunks) != size:
+        raise RuntimeError(f"Timed out reading {size} serial bytes")
+    return bytes(chunks)
 
 
-def _send_command(
+def _send_frame(port: "serial.Serial", payload: bytes) -> None:
+    frame = bytes([FRAME_FROM_CLIENT]) + len(payload).to_bytes(2, "little") + payload
+    port.write(frame)
+
+
+def _read_frame(port: "serial.Serial", timeout: float) -> bytes:
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        start = port.read(1)
+        if not start:
+            time.sleep(0.05)
+            continue
+        if start[0] != FRAME_FROM_DEVICE:
+            continue
+
+        remaining = max(deadline - time.time(), 0.1)
+        header = _read_exact(port, 2, remaining)
+        size = int.from_bytes(header, "little")
+        remaining = max(deadline - time.time(), 0.1)
+        return _read_exact(port, size, remaining)
+
+    raise RuntimeError("Timed out waiting for MeshCore companion frame")
+
+
+def _read_until_packet_type(
     port: "serial.Serial",
-    command: str,
-    timeout: float = 10.0,
-) -> str:
-    if not command.endswith("\r\n"):
-        command = f"{command}\r\n"
-
-    port.reset_input_buffer()
-    port.reset_output_buffer()
-    port.write(command.encode("utf-8"))
-
-    start_time = time.time()
-    response_chunks: list[str] = []
-
-    while (time.time() - start_time) < timeout:
-        time.sleep(0.1)
-        if port.in_waiting > 0:
-            data = port.read_all().decode(errors="replace")
-            response_chunks.append(data)
-            full_response = "".join(response_chunks)
-            if "-> " in full_response or full_response.rstrip().endswith(">"):
-                break
-
-    return "".join(response_chunks)
+    packet_type: int,
+    timeout: float,
+) -> bytes:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        frame = _read_frame(port, max(deadline - time.time(), 0.1))
+        if frame and frame[0] == packet_type:
+            return frame
+    raise RuntimeError(f"Timed out waiting for packet type {packet_type}")
 
 
 def read_device_keys(
@@ -70,22 +90,24 @@ def read_device_keys(
         bytesize=serial.EIGHTBITS,
         rtscts=False,
     ) as port:
-        # Wake the MeshCore serial CLI and clear any stale prompt data.
-        port.write(b"\r\n\r\n")
-        time.sleep(0.2)
+        port.rts = False
         port.reset_input_buffer()
         port.reset_output_buffer()
 
-        public_response = _send_command(port, "get public.key", timeout=10.0)
-        public_key = _clean_hex(_extract_arrow_value(public_response))
-        if len(public_key) != 64 or any(c not in "0123456789ABCDEF" for c in public_key):
-            raise RuntimeError(f"Invalid MeshCore public key response: {public_key!r}")
+        # Companion protocol handshake: app start yields SELF_INFO with public key.
+        _send_frame(port, CMD_APP_START)
+        self_info = _read_until_packet_type(port, PACKET_SELF_INFO, timeout=10.0)
+        if len(self_info) < 36:
+            raise RuntimeError(f"Invalid SELF_INFO frame length: {len(self_info)}")
+        public_key = self_info[4:36].hex().upper()
 
-        private_response = _send_command(port, "get prv.key", timeout=10.0)
-        private_key = _clean_hex(_extract_arrow_value(private_response))
-        if len(private_key) != 128 or any(c not in "0123456789ABCDEF" for c in private_key):
+        # Export private key using companion protocol command 23.
+        _send_frame(port, CMD_EXPORT_PRIVATE_KEY)
+        private_frame = _read_until_packet_type(port, PACKET_PRIVATE_KEY, timeout=10.0)
+        if len(private_frame) < 65:
             raise RuntimeError(
-                f"Invalid MeshCore private key response length: {len(private_key)}"
+                f"Invalid PRIVATE_KEY frame length: {len(private_frame)}"
             )
+        private_key = private_frame[1:65].hex().upper()
 
         return public_key, private_key
