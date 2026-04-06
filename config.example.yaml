@@ -1,11 +1,25 @@
 mqtt:
   broker: localhost
   port: 1883
+  transport: tcp
+  ws_path: /
+  auth_method: auto
   username: null
   password: null
   topic_prefix: meshcore
   qos: 0
   retain: false
+  token_audience: null
+  token_owner: null
+  token_email: null
+  token_expiry_seconds: 3600
+  token_public_key: null
+  token_private_key: null
+  tls_enabled: false
+  tls_ca_cert: null
+  tls_client_cert: null
+  tls_client_key: null
+  tls_insecure: false
 
 meshcore:
   connection_type: tcp

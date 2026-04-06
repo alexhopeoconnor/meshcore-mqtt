@@ -17,6 +17,7 @@ A robust bridge service that connects MeshCore devices to MQTT brokers, enabling
 - **TLS/SSL Support**: Secure MQTT connections with configurable certificates
 - **Flexible Configuration**: JSON, YAML, environment variables, and command-line configuration options
 - **MQTT Integration**: Full MQTT client with authentication, QoS, retention, and auto-reconnection
+- **WebSocket + Token Auth Support**: Compatible with hosted MeshCore brokers that require MQTT over WebSockets and MeshCore auth tokens
 - **Configurable Event Monitoring**: Subscribe to specific MeshCore event types for optimal performance
 - **Message Rate Limiting**: Configurable rate limiting to prevent network flooding and ensure reliable message delivery
 - **Health Monitoring**: Built-in health checks and automatic recovery for both workers
@@ -56,11 +57,20 @@ The bridge supports multiple configuration methods with the following precedence
 #### MQTT Settings
 - `mqtt_broker`: MQTT broker address (required)
 - `mqtt_port`: MQTT broker port (default: 1883)
+- `mqtt_transport`: MQTT transport, `tcp` or `websockets` (default: `tcp`)
+- `mqtt_ws_path`: WebSocket path when using `websockets` (default: `/`)
+- `mqtt_auth_method`: `auto`, `none`, `password`, or `token` (default: `auto`)
 - `mqtt_username`: MQTT authentication username (optional)
 - `mqtt_password`: MQTT authentication password (optional)
 - `mqtt_topic_prefix`: MQTT topic prefix (default: "meshcore")
 - `mqtt_qos`: Quality of Service level 0-2 (default: 0)
 - `mqtt_retain`: Message retention flag (default: false)
+- `mqtt_token_audience`: Optional JWT audience claim for token auth
+- `mqtt_token_owner`: Optional owner public key claim for token auth
+- `mqtt_token_email`: Optional owner email claim for token auth
+- `mqtt_token_expiry_seconds`: Token lifetime in seconds (default: 3600)
+- `mqtt_token_public_key`: Optional MeshCore public key override for token auth
+- `mqtt_token_private_key`: Optional MeshCore private key override for token auth
 
 #### MeshCore Settings
 - `meshcore_connection`: Connection type (serial, ble, tcp)
@@ -147,6 +157,8 @@ log_level: INFO
 ```bash
 export MQTT_BROKER=mqtt.example.com
 export MQTT_PORT=1883
+export MQTT_TRANSPORT=tcp
+export MQTT_AUTH_METHOD=auto
 export MQTT_USERNAME=myuser
 export MQTT_PASSWORD=mypass
 export MESHCORE_CONNECTION=tcp
@@ -173,6 +185,7 @@ python -m meshcore_mqtt.main --config-file config.json
 ```bash
 python -m meshcore_mqtt.main \
   --mqtt-broker mqtt.example.com \
+  --mqtt-transport tcp \
   --mqtt-username myuser \
   --mqtt-password mypass \
   --meshcore-connection tcp \
@@ -193,6 +206,7 @@ python -m meshcore_mqtt.main --env
 ```bash
 python -m meshcore_mqtt.main \
   --mqtt-broker localhost \
+  --mqtt-transport tcp \
   --meshcore-connection tcp \
   --meshcore-address 192.168.1.100 \
   --meshcore-port 5000
@@ -202,6 +216,7 @@ python -m meshcore_mqtt.main \
 ```bash
 python -m meshcore_mqtt.main \
   --mqtt-broker localhost \
+  --mqtt-transport tcp \
   --meshcore-connection serial \
   --meshcore-address /dev/ttyUSB0 \
   --meshcore-baudrate 9600
@@ -211,9 +226,26 @@ python -m meshcore_mqtt.main \
 ```bash
 python -m meshcore_mqtt.main \
   --mqtt-broker localhost \
+  --mqtt-transport tcp \
   --meshcore-connection ble \
   --meshcore-address AA:BB:CC:DD:EE:FF
 ```
+
+#### Hosted WebSocket Token Auth
+```bash
+export MQTT_BROKER=mqtt2.eastmesh.au
+export MQTT_PORT=443
+export MQTT_TRANSPORT=websockets
+export MQTT_WS_PATH=/
+export MQTT_AUTH_METHOD=token
+export MQTT_TOKEN_AUDIENCE=mqtt2.eastmesh.au
+export MQTT_TLS_ENABLED=true
+export MESHCORE_CONNECTION=serial
+export MESHCORE_ADDRESS=/dev/ttyUSB0
+python -m meshcore_mqtt.main --env
+```
+
+Token auth requires `meshcore-decoder` at runtime. If `MQTT_TOKEN_PUBLIC_KEY` and `MQTT_TOKEN_PRIVATE_KEY` are not provided, the bridge will read them from a serial-connected MeshCore device.
 
 ## Event Types
 
@@ -535,11 +567,20 @@ LOG_LEVEL=INFO
 # MQTT Broker Configuration
 MQTT_BROKER=localhost
 MQTT_PORT=1883
+MQTT_TRANSPORT=tcp
+MQTT_WS_PATH=/
+MQTT_AUTH_METHOD=auto
 MQTT_USERNAME=user
 MQTT_PASSWORD=pass
 MQTT_TOPIC_PREFIX=meshcore
 MQTT_QOS=1
 MQTT_RETAIN=true
+MQTT_TOKEN_AUDIENCE=
+MQTT_TOKEN_OWNER=
+MQTT_TOKEN_EMAIL=
+MQTT_TOKEN_EXPIRY_SECONDS=3600
+MQTT_TOKEN_PUBLIC_KEY=
+MQTT_TOKEN_PRIVATE_KEY=
 
 # MQTT TLS/SSL Configuration (optional)
 MQTT_TLS_ENABLED=false

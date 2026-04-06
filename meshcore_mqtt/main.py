@@ -8,7 +8,7 @@ from typing import Optional
 
 import click
 
-from .config import Config, ConnectionType
+from .config import Config, ConnectionType, MQTTAuthMethod, MQTTTransport
 
 
 def setup_logging(level: str) -> None:
@@ -64,6 +64,23 @@ def setup_logging(level: str) -> None:
     help="MQTT broker port (default: 1883)",
 )
 @click.option(
+    "--mqtt-transport",
+    type=click.Choice([transport.value for transport in MQTTTransport]),
+    default=None,
+    help="MQTT transport (default: tcp)",
+)
+@click.option(
+    "--mqtt-ws-path",
+    default=None,
+    help="MQTT WebSocket path when using websockets transport (default: /)",
+)
+@click.option(
+    "--mqtt-auth-method",
+    type=click.Choice([method.value for method in MQTTAuthMethod]),
+    default=None,
+    help="MQTT authentication method (default: auto)",
+)
+@click.option(
     "--mqtt-username",
     help="MQTT username",
 )
@@ -86,6 +103,32 @@ def setup_logging(level: str) -> None:
     "--mqtt-retain/--no-mqtt-retain",
     default=False,
     help="Enable MQTT message retention (default: disabled)",
+)
+@click.option(
+    "--mqtt-token-audience",
+    help="JWT audience claim for token-based MQTT auth",
+)
+@click.option(
+    "--mqtt-token-owner",
+    help="Optional owner public key claim for token-based MQTT auth",
+)
+@click.option(
+    "--mqtt-token-email",
+    help="Optional owner email claim for token-based MQTT auth",
+)
+@click.option(
+    "--mqtt-token-expiry-seconds",
+    type=int,
+    default=None,
+    help="Token expiry in seconds for token-based MQTT auth (default: 3600)",
+)
+@click.option(
+    "--mqtt-token-public-key",
+    help="Optional MeshCore public key override for token-based MQTT auth",
+)
+@click.option(
+    "--mqtt-token-private-key",
+    help="Optional MeshCore private key override for token-based MQTT auth",
 )
 @click.option(
     "--mqtt-tls/--no-mqtt-tls",
@@ -190,11 +233,20 @@ def main(
     config_file: Optional[Path],
     mqtt_broker: Optional[str],
     mqtt_port: int,
+    mqtt_transport: Optional[str],
+    mqtt_ws_path: Optional[str],
+    mqtt_auth_method: Optional[str],
     mqtt_username: Optional[str],
     mqtt_password: Optional[str],
     mqtt_topic_prefix: str,
     mqtt_qos: int,
     mqtt_retain: bool,
+    mqtt_token_audience: Optional[str],
+    mqtt_token_owner: Optional[str],
+    mqtt_token_email: Optional[str],
+    mqtt_token_expiry_seconds: Optional[int],
+    mqtt_token_public_key: Optional[str],
+    mqtt_token_private_key: Optional[str],
     mqtt_tls: bool,
     mqtt_tls_ca_cert: Optional[str],
     mqtt_tls_client_cert: Optional[str],
@@ -246,11 +298,20 @@ def main(
             mqtt_config = MQTTConfig(
                 broker=mqtt_broker,
                 port=mqtt_port,
+                transport=MQTTTransport(mqtt_transport or MQTTTransport.TCP.value),
+                ws_path=mqtt_ws_path or "/",
+                auth_method=MQTTAuthMethod(mqtt_auth_method or MQTTAuthMethod.AUTO.value),
                 username=mqtt_username,
                 password=mqtt_password,
                 topic_prefix=mqtt_topic_prefix,
                 qos=mqtt_qos,
                 retain=mqtt_retain,
+                token_audience=mqtt_token_audience,
+                token_owner=mqtt_token_owner,
+                token_email=mqtt_token_email,
+                token_expiry_seconds=mqtt_token_expiry_seconds or 3600,
+                token_public_key=mqtt_token_public_key,
+                token_private_key=mqtt_token_private_key,
                 tls_enabled=mqtt_tls,
                 tls_ca_cert=mqtt_tls_ca_cert,
                 tls_client_cert=mqtt_tls_client_cert,
@@ -291,10 +352,28 @@ def main(
         # Override config with any provided command line arguments
         if mqtt_broker:
             config.mqtt.broker = mqtt_broker
+        if mqtt_transport:
+            config.mqtt.transport = MQTTTransport(mqtt_transport)
+        if mqtt_ws_path:
+            config.mqtt.ws_path = mqtt_ws_path
+        if mqtt_auth_method:
+            config.mqtt.auth_method = MQTTAuthMethod(mqtt_auth_method)
         if mqtt_username:
             config.mqtt.username = mqtt_username
         if mqtt_password:
             config.mqtt.password = mqtt_password
+        if mqtt_token_audience:
+            config.mqtt.token_audience = mqtt_token_audience
+        if mqtt_token_owner:
+            config.mqtt.token_owner = mqtt_token_owner
+        if mqtt_token_email:
+            config.mqtt.token_email = mqtt_token_email
+        if mqtt_token_expiry_seconds is not None:
+            config.mqtt.token_expiry_seconds = mqtt_token_expiry_seconds
+        if mqtt_token_public_key:
+            config.mqtt.token_public_key = mqtt_token_public_key
+        if mqtt_token_private_key:
+            config.mqtt.token_private_key = mqtt_token_private_key
         if meshcore_connection:
             config.meshcore.connection_type = ConnectionType(meshcore_connection)
         if meshcore_address:
@@ -317,7 +396,10 @@ def main(
         logger = logging.getLogger(__name__)
 
         logger.info("Starting MeshCore MQTT Bridge")
-        logger.info(f"MQTT Broker: {config.mqtt.broker}:{config.mqtt.port}")
+        logger.info(
+            f"MQTT Broker: {config.mqtt.transport.value}://"
+            f"{config.mqtt.broker}:{config.mqtt.port}"
+        )
         logger.info(
             f"MeshCore: {config.meshcore.connection_type.value}://"
             f"{config.meshcore.address}"

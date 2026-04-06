@@ -5,11 +5,12 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 
-from .config import Config
+from .auth_token import create_auth_token
+from .config import Config, ConnectionType, MQTTAuthMethod, MQTTTransport
 from .message_queue import (
     ComponentStatus,
     Message,
@@ -18,6 +19,7 @@ from .message_queue import (
     MessageType,
     get_message_bus,
 )
+from .serial_auth import read_device_keys
 
 
 class MQTTWorker:
@@ -39,6 +41,9 @@ class MQTTWorker:
 
         # MQTT client
         self.client: Optional[mqtt.Client] = None
+        self._token_cache: Optional[Tuple[str, float]] = None
+        self._token_public_key: Optional[str] = None
+        self._token_private_key: Optional[str] = None
 
         # Connection state
         self._connected = False
@@ -173,6 +178,7 @@ class MQTTWorker:
             client_id=client_id,
             clean_session=True,
             reconnect_on_failure=True,
+            transport=self.config.mqtt.transport.value,
         )
 
         # Set up callbacks
@@ -182,13 +188,20 @@ class MQTTWorker:
         client.on_publish = self._on_publish
         client.on_log = self._on_log
 
-        # Set authentication if provided
-        if self.config.mqtt.username and self.config.mqtt.password:
-            client.username_pw_set(self.config.mqtt.username, self.config.mqtt.password)
+        # Set authentication if configured
+        username, password = self._resolve_auth_credentials()
+        if username is not None:
+            client.username_pw_set(username, password)
 
         # Configure TLS if enabled
         if self.config.mqtt.tls_enabled:
             self._configure_tls(client)
+
+        if self.config.mqtt.transport == MQTTTransport.WEBSOCKETS:
+            client.ws_set_options(path=self.config.mqtt.ws_path)
+            self.logger.info(
+                f"Configuring MQTT WebSockets transport on path {self.config.mqtt.ws_path}"
+            )
 
         # Set connection parameters
         client.keepalive = 60
@@ -197,6 +210,82 @@ class MQTTWorker:
         client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         return client
+
+    def _resolve_auth_credentials(self) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve MQTT credentials, including MeshCore token auth."""
+        auth_method = self.config.mqtt.resolved_auth_method()
+
+        if auth_method == MQTTAuthMethod.NONE:
+            return None, None
+
+        if auth_method == MQTTAuthMethod.PASSWORD:
+            if not self.config.mqtt.username:
+                raise RuntimeError("MQTT username is required for password auth")
+            return self.config.mqtt.username, self.config.mqtt.password
+
+        public_key, private_key = self._resolve_token_keypair()
+        token = self._get_or_create_auth_token(public_key, private_key)
+        username = self.config.mqtt.username or f"v1_{public_key}"
+        return username, token
+
+    def _resolve_token_keypair(self) -> Tuple[str, str]:
+        """Resolve MeshCore key material for token auth."""
+        if self._token_public_key and self._token_private_key:
+            return self._token_public_key, self._token_private_key
+
+        if self.config.mqtt.token_public_key and self.config.mqtt.token_private_key:
+            self._token_public_key = self.config.mqtt.token_public_key
+            self._token_private_key = self.config.mqtt.token_private_key
+            return self._token_public_key, self._token_private_key
+
+        if self.config.meshcore.connection_type != ConnectionType.SERIAL:
+            raise RuntimeError(
+                "MQTT token auth requires a serial MeshCore connection or explicit "
+                "MQTT_TOKEN_PUBLIC_KEY / MQTT_TOKEN_PRIVATE_KEY overrides"
+            )
+
+        self.logger.info(
+            f"Reading MeshCore key material from serial device {self.config.meshcore.address}"
+        )
+        public_key, private_key = read_device_keys(
+            self.config.meshcore.address,
+            baudrate=self.config.meshcore.baudrate,
+            timeout=float(self.config.meshcore.timeout),
+        )
+        self._token_public_key = public_key
+        self._token_private_key = private_key
+        return public_key, private_key
+
+    def _get_or_create_auth_token(self, public_key: str, private_key: str) -> str:
+        """Return a cached auth token or generate a fresh one."""
+        now = time.time()
+        expiry = self.config.mqtt.token_expiry_seconds
+        refresh_window = min(300, max(expiry // 10, 30))
+
+        if self._token_cache is not None:
+            cached_token, created_at = self._token_cache
+            if now - created_at < max(expiry - refresh_window, 1):
+                return cached_token
+
+        claims: Dict[str, Any] = {"client": "meshcore-mqtt"}
+        if self.config.mqtt.token_audience:
+            claims["aud"] = self.config.mqtt.token_audience
+
+        if self.config.mqtt.tls_enabled and not self.config.mqtt.tls_insecure:
+            if self.config.mqtt.token_owner:
+                claims["owner"] = self.config.mqtt.token_owner
+            if self.config.mqtt.token_email:
+                claims["email"] = self.config.mqtt.token_email.lower()
+
+        token = create_auth_token(
+            public_key,
+            private_key,
+            expiry_seconds=expiry,
+            **claims,
+        )
+        self._token_cache = (token, now)
+        self.logger.info("Generated MQTT auth token from MeshCore device key material")
+        return token
 
     def _configure_tls(self, client: mqtt.Client) -> None:
         """Configure TLS settings for MQTT client."""

@@ -46,8 +46,12 @@ LABEL version="1.0.0"
 # Install runtime dependencies only
 RUN apk add --no-cache \
     ca-certificates \
+    nodejs \
+    npm \
     tzdata \
     tini
+
+RUN npm install -g @michaelhart/meshcore-decoder
 
 # Create non-root user for security
 RUN addgroup -g 1000 meshcore && \
@@ -83,6 +87,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENV LOG_LEVEL=INFO \
     MQTT_BROKER=localhost \
     MQTT_PORT=1883 \
+    MQTT_TRANSPORT=tcp \
+    MQTT_AUTH_METHOD=auto \
     MQTT_TOPIC_PREFIX=meshcore \
     MESHCORE_CONNECTION=serial \
     MESHCORE_ADDRESS=/dev/ttyUSB0 \

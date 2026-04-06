@@ -18,16 +18,57 @@ class ConnectionType(str, Enum):
     TCP = "tcp"
 
 
+class MQTTTransport(str, Enum):
+    """Supported MQTT transports."""
+
+    TCP = "tcp"
+    WEBSOCKETS = "websockets"
+
+
+class MQTTAuthMethod(str, Enum):
+    """Supported MQTT authentication methods."""
+
+    AUTO = "auto"
+    NONE = "none"
+    PASSWORD = "password"
+    TOKEN = "token"
+
+
 class MQTTConfig(BaseModel):
     """MQTT broker configuration."""
 
     broker: str = Field(..., description="MQTT broker address")
     port: int = Field(default=1883, description="MQTT broker port")
+    transport: MQTTTransport = Field(
+        default=MQTTTransport.TCP, description="MQTT transport"
+    )
+    ws_path: str = Field(default="/", description="WebSocket path")
+    auth_method: MQTTAuthMethod = Field(
+        default=MQTTAuthMethod.AUTO, description="MQTT authentication method"
+    )
     username: Optional[str] = Field(default=None, description="MQTT username")
     password: Optional[str] = Field(default=None, description="MQTT password")
     topic_prefix: str = Field(default="meshcore", description="MQTT topic prefix")
     qos: int = Field(default=0, ge=0, le=2, description="Quality of Service level")
     retain: bool = Field(default=False, description="Message retention flag")
+    token_audience: Optional[str] = Field(
+        default=None, description="MQTT auth token audience"
+    )
+    token_owner: Optional[str] = Field(
+        default=None, description="Optional owner public key for token auth"
+    )
+    token_email: Optional[str] = Field(
+        default=None, description="Optional owner email for token auth"
+    )
+    token_expiry_seconds: int = Field(
+        default=3600, ge=60, le=86400, description="MQTT auth token lifetime"
+    )
+    token_public_key: Optional[str] = Field(
+        default=None, description="Optional MeshCore public key override for token auth"
+    )
+    token_private_key: Optional[str] = Field(
+        default=None, description="Optional MeshCore private key override for token auth"
+    )
 
     # TLS configuration
     tls_enabled: bool = Field(default=False, description="Enable TLS/SSL connection")
@@ -63,6 +104,36 @@ class MQTTConfig(BaseModel):
             if not file_path.is_file():
                 raise ValueError(f"TLS path is not a file: {v}")
         return v
+
+    @field_validator("token_public_key")
+    @classmethod
+    def validate_token_public_key(cls, v: Optional[str]) -> Optional[str]:
+        """Validate optional MeshCore public key override."""
+        if v is None or not v.strip():
+            return None
+        key = "".join(v.split()).upper()
+        if len(key) != 64 or any(c not in "0123456789ABCDEF" for c in key):
+            raise ValueError("token_public_key must be a 64-character hex string")
+        return key
+
+    @field_validator("token_private_key")
+    @classmethod
+    def validate_token_private_key(cls, v: Optional[str]) -> Optional[str]:
+        """Validate optional MeshCore private key override."""
+        if v is None or not v.strip():
+            return None
+        key = "".join(v.split()).upper()
+        if len(key) != 128 or any(c not in "0123456789ABCDEF" for c in key):
+            raise ValueError("token_private_key must be a 128-character hex string")
+        return key
+
+    def resolved_auth_method(self) -> MQTTAuthMethod:
+        """Resolve AUTO auth mode to a concrete authentication strategy."""
+        if self.auth_method != MQTTAuthMethod.AUTO:
+            return self.auth_method
+        if self.username or self.password:
+            return MQTTAuthMethod.PASSWORD
+        return MQTTAuthMethod.NONE
 
 
 class MeshCoreConfig(BaseModel):
@@ -232,11 +303,20 @@ class Config(BaseModel):
         mqtt_config = MQTTConfig(
             broker=os.getenv("MQTT_BROKER", ""),
             port=int(os.getenv("MQTT_PORT", "1883")),
+            transport=MQTTTransport(os.getenv("MQTT_TRANSPORT", "tcp")),
+            ws_path=os.getenv("MQTT_WS_PATH", "/"),
+            auth_method=MQTTAuthMethod(os.getenv("MQTT_AUTH_METHOD", "auto")),
             username=os.getenv("MQTT_USERNAME"),
             password=os.getenv("MQTT_PASSWORD"),
             topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "meshcore"),
             qos=int(os.getenv("MQTT_QOS", "0")),
             retain=os.getenv("MQTT_RETAIN", "false").lower() == "true",
+            token_audience=os.getenv("MQTT_TOKEN_AUDIENCE"),
+            token_owner=os.getenv("MQTT_TOKEN_OWNER"),
+            token_email=os.getenv("MQTT_TOKEN_EMAIL"),
+            token_expiry_seconds=int(os.getenv("MQTT_TOKEN_EXPIRY_SECONDS", "3600")),
+            token_public_key=os.getenv("MQTT_TOKEN_PUBLIC_KEY"),
+            token_private_key=os.getenv("MQTT_TOKEN_PRIVATE_KEY"),
             tls_enabled=os.getenv("MQTT_TLS_ENABLED", "false").lower() == "true",
             tls_ca_cert=os.getenv("MQTT_TLS_CA_CERT"),
             tls_client_cert=os.getenv("MQTT_TLS_CLIENT_CERT"),
